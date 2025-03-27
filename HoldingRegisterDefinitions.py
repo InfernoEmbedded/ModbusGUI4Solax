@@ -1,22 +1,63 @@
 class HoldingRegisterDefinitions:
     """
-    Encapsulates all known holding registers from 0x0000 to 0x0115.
-    Each entry is a dict:
+    Encapsulates all known holding registers (0x0000 ~ 0x0115).
+    Each register entry is a dict with fields:
       {
         'address': 0x0000,
-        'length': 7,
-        'description': 'some text',
-        'scale': (float),
-        'unit': (str),
-        'signed': (bool)
+        'length': 1 or more,
+        'description': 'string',
+        'scale': (float) [optional],
+        'unit': (str) [optional],
+        'signed': (bool) [optional]
       }
-    'scale', 'unit', 'signed' are optional, used for single-register numeric scaling.
-    'length' > 1 => multi-register ASCII text block or reserved data.
+
+    The new renderRegister(reg, raw_list) method interprets raw data from the
+    Modbus read and returns a user-friendly display string, handling:
+      - Multi-register ASCII
+      - Safety type (0x001D)
+      - Numeric scaling & units
     """
 
     def __init__(self):
-        self._registers = [
+        # 1) Safety definitions, moved here
+        self._safety_map = {
+            0:  "VDE0126",
+            1:  "ARN4105",
+            2:  "AS4777_AU",
+            3:  "G98/1",
+            4:  "C10/11",
+            5:  "OVE/ONORME8001",
+            6:  "EN50438_NL",
+            7:  "EN50438_DK",
+            8:  "CEB",
+            9:  "CEI021",
+            10: "NRS097_2_1",
+            11: "VDE0126_Gr_Is",
+            12: "UTE_C15_712",
+            13: "IEC61727",
+            14: "G99/1",
+            15: "VDE0126_Gr_Co",
+            16: "France_VFR2014",
+            17: "C15_712_is_50",
+            18: "C15_712_is_60",
+            19: "AS4777_NZ",
+            20: "RD1699",
+            21: "Chile",
+            22: "Israel/EN50438_Ireland",
+            23: "Czech_CEZ/Philippines",
+            24: "UNE_206/Czech_PPDS",
+            25: "EN50438_Poland/Czech_50438",
+            26: "EN50438_Portugal",
+            27: "PEA",
+            28: "MEA",
+            29: "EN50438_Sweden",
+            30: "Philippines",
+            31: "EN50438_Slovenia",
+            32: "CEI0_16"
+        }
 
+        # 2) Register definitions
+        self._registers = [
             # Multi-register ASCII blocks
             {"address": 0x0000, "length": 7, "description": "SeriesNumber (14 chars)"},
             {"address": 0x0007, "length": 7, "description": "FactoryName (14 chars)"},
@@ -183,5 +224,63 @@ class HoldingRegisterDefinitions:
         ]
 
     def get_registers(self):
-        """Return the entire list of holding register definitions."""
+        """Return the list of register definitions."""
         return self._registers
+
+    def renderRegister(self, reg, raw_list):
+        """
+        Given a register definition 'reg' and the raw register data 'raw_list'
+        from Modbus, return a string for display.
+
+        Cases:
+          - If length>1 => interpret multi-register ASCII.
+          - If address==0x001D => safety type from self._safety_map.
+          - Otherwise => numeric, possibly with scale/unit.
+        """
+        length = reg["length"]
+        address = reg["address"]
+
+        # Multi-register => ASCII
+        if length > 1:
+            chars = []
+            for val in raw_list:
+                high_byte = (val >> 8) & 0xFF
+                low_byte = val & 0xFF
+                chars.append(chr(high_byte))
+                chars.append(chr(low_byte))
+            return "".join(chars).strip()
+
+        # Single register
+        raw_val = raw_list[0]
+
+        # Safety type
+        if address == 0x001D:
+            mapped = self._safety_map.get(raw_val, "Unknown")
+            return f"{raw_val} => {mapped}"
+
+        # Otherwise => numeric
+        scale = reg.get("scale", 1.0)
+        unit = reg.get("unit", "")
+        signed = reg.get("signed", False)
+
+        # Convert raw => float
+        fromSigned = self._convert_raw_to_float(raw_val, scale, signed)
+        # Format
+        return self._format_display_str(fromSigned, unit)
+
+    def _convert_raw_to_float(self, raw_val, scale, signed):
+        """
+        Helper to handle sign and scaling.
+        """
+        if signed:
+            if raw_val & 0x8000:
+                raw_val = raw_val - 0x10000
+        return raw_val * scale
+
+    def _format_display_str(self, value, unit):
+        """
+        Format numeric with up to 3 decimals, optionally appending unit.
+        """
+        if unit:
+            return f"{value:.3f} {unit}"
+        return f"{value:.3f}"
