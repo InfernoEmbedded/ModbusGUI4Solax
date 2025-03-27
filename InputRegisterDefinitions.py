@@ -1,4 +1,6 @@
-class InputRegisterDefinitions:
+from register_utils import RegisterDefinitionsBase
+
+class InputRegisterDefinitions(RegisterDefinitionsBase):
     """
     Fully populated list of Input Registers (function code 0x04), addresses 0x0000 ~ 0x0284,
     based on the V3.21 PDF. Each entry includes: address, length, description, plus scale/unit/signed
@@ -213,64 +215,3 @@ class InputRegisterDefinitions:
     def get_registers(self):
         """Returns the entire list of Input Register definitions."""
         return self._registers
-
-    def renderRegister(self, reg, raw_list):
-        """
-        Given a register definition 'reg' and the raw register data 'raw_list'
-        from Modbus, return a string for display.
-
-        Cases:
-          - If length>1 => interpret multi-register ASCII.
-          - Otherwise => numeric, possibly with scale/unit.
-        """
-        length = reg["length"]
-        address = reg["address"]
-
-        # Multi-register => ASCII
-        if length > 1:
-            chars = []
-            for val in raw_list:
-                high_byte = (val >> 8) & 0xFF
-                low_byte = val & 0xFF
-                chars.append(chr(high_byte))
-                chars.append(chr(low_byte))
-            return "".join(chars).strip()
-
-        # Single register
-        raw_val = raw_list[0]
-
-        # Otherwise => numeric
-        scale = reg.get("scale", 1.0)
-        unit = reg.get("unit", "")
-        signed = reg.get("signed", False)
-
-        # Convert raw => float
-        fromSigned = self._convert_raw_to_float(raw_val, scale, signed)
-        return self._format_display_str(fromSigned, scale, unit)
-
-    def _convert_raw_to_float(self, raw_val, scale, signed):
-        """
-        Helper to handle sign and scaling.
-        """
-        if signed:
-            if raw_val & 0x8000:
-                raw_val = raw_val - 0x10000
-        return raw_val * scale
-
-    def _format_display_str(self, value, scale, unit):
-        """
-        If scale == 1.0 => integer display,
-        else => 3 decimals.
-        """
-        if scale == 1.0:
-            val_str = f"{int(value)}"
-        elif scale == 0.1:
-            val_str = f"{value:.1f}"
-        elif scale == 0.01:
-            val_str = f"{value:.2f}"
-        else:
-            val_str = f"{value:.3f}"
-
-        if unit:
-            return f"{val_str} {unit}"
-        return val_str

@@ -1,4 +1,6 @@
-class ParallelInputRegisterDefinitions:
+from register_utils import RegisterDefinitionsBase
+
+class ParallelInputRegisterDefinitions(RegisterDefinitionsBase):
     """
     Parallel input registers (Function code 0x04), addresses 0x01DD ~ 0x0284.
     Based on section "6. Read Input Register(Parallel State)" in the PDF.
@@ -366,51 +368,3 @@ class ParallelInputRegisterDefinitions:
 
     def get_registers(self):
         return self._registers
-
-    def renderRegister(self, reg, raw_list):
-        """
-        Similar to your existing input classes: 
-          - If length>1 => treat as ASCII by default 
-          - If length=1 => numeric with scale/unit
-        """
-        length = reg["length"]
-        if length > 1:
-            # By default, interpret as ASCII
-            chars = []
-            for val in raw_list:
-                high_byte = (val >> 8) & 0xFF
-                low_byte = val & 0xFF
-                chars.append(chr(high_byte))
-                chars.append(chr(low_byte))
-            return "".join(chars).strip()
-
-        # single
-        raw_val = raw_list[0]
-        scale = reg.get("scale", 1.0)
-        unit = reg.get("unit", "")
-        signed = reg.get("signed", False)
-
-        if signed and (raw_val & 0x8000):
-            raw_val -= 0x10000
-
-        val = raw_val * scale
-        return self._format_display_str(val, scale, unit)
-
-    def _format_display_str(self, value, scale, unit):
-        """
-        If scale == 1.0 => integer 
-        elif scale==0.1 => 1 decimal, etc...
-        For consistency with your code:
-        """
-        if scale == 1.0:
-            val_str = f"{int(value)}"
-        elif abs(scale - 0.1) < 1e-9:
-            val_str = f"{value:.1f}"
-        elif abs(scale - 0.01) < 1e-9:
-            val_str = f"{value:.2f}"
-        else:
-            val_str = f"{value:.3f}"
-
-        if unit:
-            return f"{val_str} {unit}"
-        return val_str

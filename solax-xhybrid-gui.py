@@ -85,23 +85,34 @@ class ModbusGUI:
         ttk.Button(connection_frame, text="Connect", command=self.on_connect)\
             .grid(row=0, column=6, padx=5, pady=5, sticky="e")
 
-        # Create a Notebook for tabs
+        # Notebook for tabs
         self.notebook = ttk.Notebook(master)
         self.notebook.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
 
-        # Create each tab in a dedicated method
-        self._create_holding_tab()
-        self._create_input_tab()
-        self._create_selftest_tab()
-        self._create_parallel_tab()
+        self.holding_tab = self.create_tab("Holding Registers")
+        self.input_tab = self.create_tab("Input Registers")
+        self.selftest_tab = self.create_tab("Self Test Registers")
+        self.parallel_tab = self.create_tab("Parallel Registers")
 
-        # Window resizing
+        # Create treeviews in each tab
+        self.tree = self.create_register_table(self.holding_tab)
+        self.tooltip = RowTooltip(self.tree)
+
+        self.tree_input = self.create_register_table(self.input_tab)
+        self.tooltip_input = RowTooltip(self.tree_input)
+
+        self.tree_test = self.create_register_table(self.selftest_tab)
+        self.tooltip_test = RowTooltip(self.tree_test)
+
+        self.tree_parallel = self.create_register_table(self.parallel_tab)
+        self.tooltip_parallel = RowTooltip(self.tree_parallel)
+
         master.columnconfigure(0, weight=1)
         master.rowconfigure(1, weight=1)
 
-        # 3) Create definitions & local caches
-        self.reg_defs = HoldingRegisterDefinitions()
-        self.holding_registers = self.reg_defs.get_registers()
+        # Register definitions
+        self.holding_defs = HoldingRegisterDefinitions()
+        self.holding_registers = self.holding_defs.get_registers()
 
         self.input_defs = InputRegisterDefinitions()
         self.input_registers = self.input_defs.get_registers()
@@ -112,495 +123,212 @@ class ModbusGUI:
         self.parallel_defs = ParallelInputRegisterDefinitions()
         self.parallel_registers = self.parallel_defs.get_registers()
 
+        # Dictionaries to track row IDs and previous numeric values
         self.prev_numeric_values = {}
         self.prev_numeric_values_input = {}
         self.prev_numeric_values_test = {}
         self.prev_numeric_values_parallel = {}
 
-    # ------------------------------------------------------------------------
-    # Tab creation functions
-    # ------------------------------------------------------------------------
-    def _create_holding_tab(self):
-        self.holding_tab = ttk.Frame(self.notebook)
-        self.notebook.add(self.holding_tab, text="Holding Registers")
+    def create_tab(self, title):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text=title)
+        return tab
 
-        table_frame = ttk.Frame(self.holding_tab)
-        table_frame.pack(fill="both", expand=True)
-
-        self.tree = ttk.Treeview(
-            table_frame,
-            columns=("address", "desc", "value"),
-            show='headings'
-        )
-        self.tree.heading("address", text="Register Address")
-        self.tree.heading("desc", text="Description")
-        self.tree.heading("value", text="Value")
-
-        # Prevent address/value columns from stretching:
-        self.tree.column("address", width=120, anchor="e", stretch=False)
-        self.tree.column("desc", width=300, anchor="w", stretch=True)
-        self.tree.column("value", width=150, anchor="w", stretch=False)
-
-        self.tree.grid(row=0, column=0, sticky="nsew")
-
-        vsb = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=vsb.set)
+    def create_register_table(self, parent, columns=("address", "desc", "value"), widths=(120, 300, 150)):
+        frame = ttk.Frame(parent)
+        frame.pack(fill="both", expand=True)
+        tree = ttk.Treeview(frame, columns=columns, show="headings")
+        for col, width in zip(columns, widths):
+            tree.heading(col, text=col.capitalize())
+            anchor = "e" if col == "address" else "w"
+            stretch = False if col in ("address", "value") else True
+            tree.column(col, width=width, anchor=anchor, stretch=stretch)
+        tree.grid(row=0, column=0, sticky="nsew")
+        vsb = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=vsb.set)
         vsb.grid(row=0, column=1, sticky="ns")
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(0, weight=1)
+        return tree
 
-        table_frame.columnconfigure(0, weight=1)
-        table_frame.rowconfigure(0, weight=1)
+    def get_modbus_client(self):
+        ip = self.ip_entry.get()
+        port = int(self.port_entry.get())
+        client = ModbusTcpClient(host=ip, port=port)
+        if not client.connect():
+            raise ConnectionError(f"Could not connect to {ip}:{port}")
+        return client
 
-        self.tooltip = RowTooltip(self.tree)
+    def format_raw_list(self, raw_list):
+        if len(raw_list) == 1:
+            raw_str = str(raw_list[0])
+            hex_str = f"0x{raw_list[0]:04X}"
+        else:
+            raw_str = "[" + ", ".join(str(v) for v in raw_list) + "]"
+            hex_str = "[" + ", ".join(f"0x{v:04X}" for v in raw_list) + "]"
+        return raw_str, hex_str
 
-    def _create_input_tab(self):
-        self.input_tab = ttk.Frame(self.notebook)
-        self.notebook.add(self.input_tab, text="Input Registers")
-
-
-        table_frame_in = ttk.Frame(self.input_tab)
-        table_frame_in.pack(fill="both", expand=True)
-
-        self.tree_input = ttk.Treeview(
-            table_frame_in,
-            columns=("address", "desc", "value"),
-            show='headings'
-        )
-        self.tree_input.heading("address", text="Register Address")
-        self.tree_input.heading("desc", text="Description")
-        self.tree_input.heading("value", text="Value")
-
-        self.tree_input.column("address", width=120, anchor="e", stretch=False)
-        self.tree_input.column("desc", width=300, anchor="w", stretch=True)
-        self.tree_input.column("value", width=150, anchor="w", stretch=False)
-        self.tree_input.grid(row=0, column=0, sticky="nsew")
-
-        vsb_in = ttk.Scrollbar(table_frame_in, orient="vertical", command=self.tree_input.yview)
-        self.tree_input.configure(yscrollcommand=vsb_in.set)
-        vsb_in.grid(row=0, column=1, sticky="ns")
-
-        table_frame_in.columnconfigure(0, weight=1)
-        table_frame_in.rowconfigure(0, weight=1)
-
-        self.tooltip_input = RowTooltip(self.tree_input)
-
-    def _create_selftest_tab(self):
-        self.selftest_tab = ttk.Frame(self.notebook)
-        self.notebook.add(self.selftest_tab, text="Self Test Registers")
-
-        table_frame_test = ttk.Frame(self.selftest_tab)
-        table_frame_test.pack(fill="both", expand=True)
-
-        self.tree_test = ttk.Treeview(
-            table_frame_test,
-            columns=("address", "desc", "value"),
-            show='headings'
-        )
-        self.tree_test.heading("address", text="Register Address")
-        self.tree_test.heading("desc", text="Description")
-        self.tree_test.heading("value", text="Value")
-
-        self.tree_test.column("address", width=120, anchor="e", stretch=False)
-        self.tree_test.column("desc", width=300, anchor="w", stretch=True)
-        self.tree_test.column("value", width=150, anchor="w", stretch=False)
-        self.tree_test.grid(row=0, column=0, sticky="nsew")
-
-        vsb_test = ttk.Scrollbar(table_frame_test, orient="vertical", command=self.tree_test.yview)
-        self.tree_test.configure(yscrollcommand=vsb_test.set)
-        vsb_test.grid(row=0, column=1, sticky="ns")
-
-        table_frame_test.columnconfigure(0, weight=1)
-        table_frame_test.rowconfigure(0, weight=1)
-
-        self.tooltip_test = RowTooltip(self.tree_test)
-
-    def _create_parallel_tab(self):
-        """Create the new 'Parallel Registers' tab & table."""
-        self.parallel_tab = ttk.Frame(self.notebook)
-        self.notebook.add(self.parallel_tab, text="Parallel Registers")
-
-        table_frame_par = ttk.Frame(self.parallel_tab)
-        table_frame_par.pack(fill="both", expand=True)
-
-        self.tree_parallel = ttk.Treeview(
-            table_frame_par,
-            columns=("address", "desc", "value"),
-            show='headings'
-        )
-        self.tree_parallel.heading("address", text="Register Address")
-        self.tree_parallel.heading("desc", text="Description")
-        self.tree_parallel.heading("value", text="Value")
-
-        self.tree_parallel.column("address", width=120, anchor="e", stretch=False)
-        self.tree_parallel.column("desc", width=300, anchor="w", stretch=True)
-        self.tree_parallel.column("value", width=150, anchor="w", stretch=False)
-
-        self.tree_parallel.grid(row=0, column=0, sticky="nsew")
-
-        vsb_par = ttk.Scrollbar(table_frame_par, orient="vertical", command=self.tree_parallel.yview)
-        self.tree_parallel.configure(yscrollcommand=vsb_par.set)
-        vsb_par.grid(row=0, column=1, sticky="ns")
-
-        table_frame_par.columnconfigure(0, weight=1)
-        table_frame_par.rowconfigure(0, weight=1)
-
-        self.tooltip_parallel = RowTooltip(self.tree_parallel)
-
-    # ------------------------------------------------------------------------
-    # Connection & fetching logic
-    # ------------------------------------------------------------------------
-    def on_connect(self):
-        try:
-            new_int = int(self.interval_entry.get())
-        except ValueError:
-            messagebox.showerror("Invalid Interval", "Please enter a valid integer.")
-            return
-
-        self.update_interval = new_int
-
-        # Clear Holding table
-        self.tree.delete(*self.tree.get_children())
-        self.tooltip.row_tooltip_data.clear()
-        self.address_to_rowid = {}
-        for r in self.holding_registers:
-            row_id = self.tree.insert("", "end", values=(f"0x{r['address']:04X}", r["description"], ""))
-            self.address_to_rowid[r["address"]] = row_id
-            if r["length"] == 1 and r["address"] != 0x001D:
-                self.prev_numeric_values[r["address"]] = None
+    def determine_color(self, reg, disp_str, prev_values):
+        if reg["length"] == 1:
+            try:
+                numeric_val = float(disp_str.split()[0])
+            except:
+                numeric_val = None
+            old_val = prev_values.get(reg["address"])
+            if old_val is None or numeric_val is None:
+                color_tag = "white_bg"
             else:
-                self.prev_numeric_values[r["address"]] = None
+                color_tag = "bg_green" if numeric_val > old_val else ("bg_red" if numeric_val < old_val else "white_bg")
+            prev_values[reg["address"]] = numeric_val
+        else:
+            color_tag = "white_bg"
+            prev_values[reg["address"]] = None
+        return color_tag
 
-        # Clear Input table
-        self.tree_input.delete(*self.tree_input.get_children())
-        self.tooltip_input.row_tooltip_data.clear()
-        self.address_to_rowid_input = {}
-        for r in self.input_registers:
-            row_id = self.tree_input.insert("", "end", values=(f"0x{r['address']:04X}", r["description"], ""))
-            self.address_to_rowid_input[r["address"]] = row_id
-            self.prev_numeric_values_input[r["address"]] = None
-
-        # Clear SelfTest table
-        self.tree_test.delete(*self.tree_test.get_children())
-        self.tooltip_test.row_tooltip_data.clear()
-        self.address_to_rowid_test = {}
-        for r in self.selftest_registers:
-            row_id = self.tree_test.insert("", "end", values=(f"0x{r['address']:04X}", r["description"], ""))
-            self.address_to_rowid_test[r["address"]] = row_id
-            self.prev_numeric_values_test[r["address"]] = None
-
-        # Clear Parallel
-        self.tree_parallel.delete(*self.tree_parallel.get_children())
-        self.tooltip_parallel.row_tooltip_data.clear()
-        self.address_to_rowid_parallel = {}
-        for r in self.parallel_registers:
-            row_id = self.tree_parallel.insert("", "end", values=(f"0x{r['address']:04X}", r["description"], ""))
-            self.address_to_rowid_parallel[r["address"]] = row_id
-            self.prev_numeric_values_parallel[r["address"]] = None
-
-        # fetch each set once
-        self.fetch_data()
-        self.fetch_data_input()
-        self.fetch_data_selftest()
-        self.fetch_data_parallel()
-
-        # 5. schedule repeats if interval>0
-        if self.update_interval > 0:
-            self.master.after(self.update_interval * 1000, self.periodic_fetch)
-            self.master.after(self.update_interval * 1000, self.periodic_fetch_input)
-            self.master.after(self.update_interval * 1000, self.periodic_fetch_selftest)
-            self.master.after(self.update_interval * 1000, self.periodic_fetch_parallel)
-
-    def periodic_fetch(self):
-        self.fetch_data()
-        self.master.after(self.update_interval * 1000, self.periodic_fetch)
-
-    def periodic_fetch_input(self):
-        self.fetch_data_input()
-        self.master.after(self.update_interval * 1000, self.periodic_fetch_input)
-
-    def periodic_fetch_selftest(self):
-        self.fetch_data_selftest()
-        self.master.after(self.update_interval * 1000, self.periodic_fetch_selftest)
-
-    def periodic_fetch_parallel(self):
-        self.fetch_data_parallel()
-        self.master.after(self.update_interval * 1000, self.periodic_fetch_parallel)
-
-    def fetch_data(self):
-        ip = self.ip_entry.get()
-        port = int(self.port_entry.get())
-        client = ModbusTcpClient(host=ip, port=port)
-        if not client.connect():
-            messagebox.showerror("Connection Error", f"Could not connect to {ip}:{port}")
-            return
-
-        try:
-            for reg in self.holding_registers:
-                row_id = self.address_to_rowid[reg["address"]]
-                resp = client.read_holding_registers(address=reg["address"], count=reg["length"])
-                if resp.isError():
-                    raw_str = "Error"
-                    hex_str = "Error"
-                    disp_str = "Error reading"
-                    color_tag = "white_bg"
-                else:
-                    raw_list = resp.registers
-                    if len(raw_list) == 1:
-                        raw_str = str(raw_list[0])
-                        hex_str = f"0x{raw_list[0]:04X}"
-                    else:
-                        raw_str = "[" + ", ".join(str(v) for v in raw_list) + "]"
-                        hex_str = "[" + ", ".join(f"0x{v:04X}" for v in raw_list) + "]"
-
-                    disp_str = self.reg_defs.renderRegister(reg, raw_list)
-
-                    # color-coded
-                    if reg["length"] == 1 and reg["address"] != 0x001D:
-                        numeric_val = self._try_parse_numeric(disp_str)
-                        old_val = self.prev_numeric_values[reg["address"]]
-                        if old_val is None or numeric_val is None:
-                            color_tag = "white_bg"
-                        else:
-                            if numeric_val > old_val:
-                                color_tag = "bg_green"
-                            elif numeric_val < old_val:
-                                color_tag = "bg_red"
-                            else:
-                                color_tag = "white_bg"
-                        self.prev_numeric_values[reg["address"]] = numeric_val
-                    else:
-                        # multi or safety => always white
-                        color_tag = "white_bg"
-                        self.prev_numeric_values[reg["address"]] = None
-
-                self.tree.item(row_id, values=(f"0x{reg['address']:04X}", reg["description"], disp_str))
-                self._set_row_bg(self.tree, row_id, color_tag)
-                self.tooltip.set_row_data(row_id, raw_str, hex_str)
-
-        except ModbusException as e:
-            messagebox.showerror("Modbus Error", str(e))
-        except Exception as e:
-            messagebox.showerror("Error", str(e))
-        finally:
-            client.close()
-
-    def fetch_data_input(self):
-        ip = self.ip_entry.get()
-        port = int(self.port_entry.get())
-
-        client = ModbusTcpClient(host=ip, port=port)
-        if not client.connect():
-            messagebox.showerror("Connection Error", f"Could not connect to {ip}:{port} (input regs)")
-            return
-
-        try:
-            for reg in self.input_registers:
-                row_id = self.address_to_rowid_input[reg["address"]]
-                # For input registers, we use read_input_registers
-                resp = client.read_input_registers(
-                    address=reg["address"], count=reg["length"]
-                )
-                if resp.isError():
-                    raw_str = "Error"
-                    hex_str = "Error"
-                    disp_str = "Error reading"
-                    color_tag = "white_bg"
-                else:
-                    raw_list = resp.registers
-                    if len(raw_list) == 1:
-                        raw_str = str(raw_list[0])
-                        hex_str = f"0x{raw_list[0]:04X}"
-                    else:
-                        raw_str = "[" + ", ".join(str(v) for v in raw_list) + "]"
-                        hex_str = "[" + ", ".join(f"0x{v:04X}" for v in raw_list) + "]"
-
-                    # Use the input registers definition's render method
-                    disp_str = self.input_defs.renderRegister(reg, raw_list)
-
-                    # Color-coded approach if single numeric (same idea)
-                    if reg["length"] == 1:
-                        numeric_val = self._try_parse_numeric(disp_str)
-                        old_val = self.prev_numeric_values_input[reg["address"]]
-                        if old_val is None or numeric_val is None:
-                            color_tag = "white_bg"
-                        else:
-                            if numeric_val > old_val:
-                                color_tag = "bg_green"
-                            elif numeric_val < old_val:
-                                color_tag = "bg_red"
-                            else:
-                                color_tag = "white_bg"
-                        self.prev_numeric_values_input[reg["address"]] = numeric_val
-                    else:
-                        color_tag = "white_bg"
-                        self.prev_numeric_values_input[reg["address"]] = None
-
-                self.tree_input.item(row_id, values=(f"0x{reg['address']:04X}", reg["description"], disp_str))
-                self._set_row_bg(self.tree_input, row_id, color_tag)
-                self.tooltip_input.set_row_data(row_id, raw_str, hex_str)
-
-        except ModbusException as e:
-            messagebox.showerror("Modbus Error", str(e))
-        except Exception as e:
-            messagebox.showerror("Error", str(e))
-        finally:
-            client.close()
-
-    def fetch_data_selftest(self):
-        ip = self.ip_entry.get()
-        port = int(self.port_entry.get())
-        client = ModbusTcpClient(host=ip, port=port)
-        if not client.connect():
-            messagebox.showerror("Connection Error", f"Could not connect to {ip}:{port} (self-test)")
-            return
-
-        try:
-            for reg in self.selftest_registers:
-                row_id = self.address_to_rowid_test[reg["address"]]
-                resp = client.read_input_registers(address=reg["address"], count=reg["length"])
-                if resp.isError():
-                    raw_str = "Error"
-                    hex_str = "Error"
-                    disp_str = "Error reading"
-                    color_tag = "white_bg"
-                else:
-                    raw_list = resp.registers
-                    if len(raw_list) == 1:
-                        raw_str = str(raw_list[0])
-                        hex_str = f"0x{raw_list[0]:04X}"
-                    else:
-                        raw_str = "[" + ", ".join(str(v) for v in raw_list) + "]"
-                        hex_str = "[" + ", ".join(f"0x{v:04X}" for v in raw_list) + "]"
-
-                    disp_str = self.selftest_defs.renderRegister(reg, raw_list)
-
-                    if reg["length"] == 1:
-                        numeric_val = self._try_parse_numeric(disp_str)
-                        old_val = self.prev_numeric_values_test[reg["address"]]
-                        if old_val is None or numeric_val is None:
-                            color_tag = "white_bg"
-                        else:
-                            if numeric_val > old_val:
-                                color_tag = "bg_green"
-                            elif numeric_val < old_val:
-                                color_tag = "bg_red"
-                            else:
-                                color_tag = "white_bg"
-                        self.prev_numeric_values_test[reg["address"]] = numeric_val
-                    else:
-                        color_tag = "white_bg"
-                        self.prev_numeric_values_test[reg["address"]] = None
-
-                self.tree_test.item(row_id, values=(f"0x{reg['address']:04X}",
-                                                    reg["description"], disp_str))
-                self._set_row_bg(self.tree_test, row_id, color_tag)
-                self.tooltip_test.set_row_data(row_id, raw_str, hex_str)
-
-        except ModbusException as e:
-            messagebox.showerror("Modbus Error", str(e))
-        except Exception as e:
-            messagebox.showerror("Error", str(e))
-        finally:
-            client.close()
-
-    def fetch_data_parallel(self):
-        """Fetch parallel input registers, skipping any that are marked invalid."""
-        ip = self.ip_entry.get()
-        port = int(self.port_entry.get())
-        client = ModbusTcpClient(host=ip, port=port)
-
-        # Attempt connection, but avoid printing errors for "Exception response 132 / 0"
-        if not client.connect():
-            messagebox.showerror("Connection Error", f"Could not connect to {ip}:{port} (parallel regs)")
-            return
-
-        try:
-            for reg in self.parallel_registers:
-                address = reg["address"]
-
-                # SKIP if previously marked invalid
-                if address in self.invalid_parallel_registers:
-                    row_id = self.address_to_rowid_parallel[address]
-                    self.tree_parallel.item(row_id, values=(
-                        f"0x{address:04X}",
-                        reg["description"],
-                        "Invalid (skipped)"
-                    ))
-                    continue
-
-                # Attempt the read
-                resp = client.read_input_registers(address=address, count=reg["length"])
-                if resp.isError():
-                    self.invalid_parallel_registers.add(address)
-
-                    row_id = self.address_to_rowid_parallel[address]
-                    self.tree_parallel.item(row_id, values=(
-                        f"0x{address:04X}",
-                        reg["description"],
-                        "Invalid (unreadable)"
-                    ))
-                    continue
-
-                raw_list = resp.registers
-                if len(raw_list) == 1:
-                    raw_str = str(raw_list[0])
-                    hex_str = f"0x{raw_list[0]:04X}"
-                else:
-                    raw_str = "[" + ", ".join(str(v) for v in raw_list) + "]"
-                    hex_str = "[" + ", ".join(f"0x{v:04X}" for v in raw_list) + "]"
-
-                disp_str = self.parallel_defs.renderRegister(reg, raw_list)
-
-                # color-coded approach if single numeric
-                if reg["length"] == 1:
-                    numeric_val = self._try_parse_numeric(disp_str)
-                    old_val = self.prev_numeric_values_parallel[address]
-                    if old_val is None or numeric_val is None:
-                        color_tag = "white_bg"
-                    else:
-                        if numeric_val > old_val:
-                            color_tag = "bg_green"
-                        elif numeric_val < old_val:
-                            color_tag = "bg_red"
-                        else:
-                            color_tag = "white_bg"
-                    self.prev_numeric_values_parallel[address] = numeric_val
-                else:
-                    color_tag = "white_bg"
-                    self.prev_numeric_values_parallel[address] = None
-
-                # Update UI
-                row_id = self.address_to_rowid_parallel[address]
-                self.tree_parallel.item(row_id, values=(f"0x{address:04X}", reg["description"], disp_str))
-                self._set_row_bg(self.tree_parallel, row_id, color_tag)
-                self.tooltip_parallel.set_row_data(row_id, raw_str, hex_str)
-
-        except ModbusException:
-            pass
-        finally:
-            client.close()
-
-    def _try_parse_numeric(self, disp_str):
-        """
-        Attempt to parse the displayed string as a float, ignoring unit if present.
-        e.g. '230.000 V' => 230.0
-        If parse fails, return None
-        """
-        parts = disp_str.split()
-        try:
-            return float(parts[0])
-        except:
-            return None
-
-    def _set_row_bg(self, tree_widget, row_id, color_tag):
-        # define styles
+    def set_row_bg(self, tree_widget, row_id, color_tag):
         tree_widget.tag_configure('bg_green', background='LightGreen')
         tree_widget.tag_configure('bg_red', background='LightSalmon')
         tree_widget.tag_configure('white_bg', background='white')
-
-        if not color_tag:
-            color_tag = 'white_bg'
         tree_widget.item(row_id, tags=(color_tag,))
 
+    def fetch_and_update(self, reg_list, tree, address_to_rowid, prev_values, defs_obj, read_func):
+        try:
+            client = self.get_modbus_client()
+            for reg in reg_list:
+                row_id = address_to_rowid[reg["address"]]
+                resp = read_func(client, reg["address"], reg["length"])
+                if resp.isError():
+                    raw_str, hex_str = "Error", "Error"
+                    disp_str = "Error reading"
+                    color_tag = "white_bg"
+                else:
+                    raw_list = resp.registers
+                    raw_str, hex_str = self.format_raw_list(raw_list)
+                    disp_str = defs_obj.render_register(reg, raw_list)
+                    color_tag = self.determine_color(reg, disp_str, prev_values)
+                tree.item(row_id, values=(f"0x{reg['address']:04X}", reg["description"], disp_str))
+                self.set_row_bg(tree, row_id, color_tag)
+                if tree == self.tree:
+                    self.tooltip.set_row_data(row_id, raw_str, hex_str)
+                elif tree == self.tree_input:
+                    self.tooltip_input.set_row_data(row_id, raw_str, hex_str)
+                elif tree == self.tree_test:
+                    self.tooltip_test.set_row_data(row_id, raw_str, hex_str)
+            client.close()
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+
+    def fetch_holding_data(self):
+        self.fetch_and_update(
+            self.holding_registers,
+            self.tree,
+            self.address_to_rowid,
+            self.prev_numeric_values,
+            self.holding_defs,
+            lambda client, addr, count: client.read_holding_registers(address=addr, count=count)
+        )
+
+    def fetch_data_input(self):
+        self.fetch_and_update(
+            self.input_registers,
+            self.tree_input,
+            self.address_to_rowid_input,
+            self.prev_numeric_values_input,
+            self.input_defs,
+            lambda client, addr, count: client.read_input_registers(address=addr, count=count)
+        )
+
+    def fetch_data_selftest(self):
+        self.fetch_and_update(
+            self.selftest_registers,
+            self.tree_test,
+            self.address_to_rowid_test,
+            self.prev_numeric_values_test,
+            self.selftest_defs,
+            lambda client, addr, count: client.read_input_registers(address=addr, count=count)
+        )
+
+    def fetch_data_parallel(self):
+        try:
+            client = self.get_modbus_client()
+            for reg in self.parallel_registers:
+                address = reg["address"]
+                row_id = self.address_to_rowid_parallel[address]
+                if address in self.invalid_parallel_registers:
+                    self.tree_parallel.item(row_id, values=(f"0x{address:04X}", reg["description"], "Invalid (skipped)"))
+                    continue
+                resp = client.read_input_registers(address=address, count=reg["length"])
+                if resp.isError():
+                    self.invalid_parallel_registers.add(address)
+                    self.tree_parallel.item(row_id, values=(f"0x{address:04X}", reg["description"], "Invalid (unreadable)"))
+                    continue
+                raw_list = resp.registers
+                raw_str, hex_str = self.format_raw_list(raw_list)
+                disp_str = self.parallel_defs.render_register(reg, raw_list)
+                color_tag = self.determine_color(reg, disp_str, self.prev_numeric_values_parallel)
+                self.tree_parallel.item(row_id, values=(f"0x{address:04X}", reg["description"], disp_str))
+                self.set_row_bg(self.tree_parallel, row_id, color_tag)
+                self.tooltip_parallel.set_row_data(row_id, raw_str, hex_str)
+            client.close()
+        except Exception:
+            pass
+
+    def on_connect(self):
+        try:
+            new_interval = int(self.interval_entry.get())
+        except ValueError:
+            messagebox.showerror("Invalid Interval", "Please enter a valid integer.")
+            return
+        self.update_interval = new_interval
+
+        # Initialize treeviews and dictionaries.
+        self.address_to_rowid = {}
+        self.tree.delete(*self.tree.get_children())
+        self.tooltip.row_tooltip_data.clear()
+        for reg in self.holding_registers:
+            row_id = self.tree.insert("", "end", values=(f"0x{reg['address']:04X}", reg["description"], ""))
+            self.address_to_rowid[reg["address"]] = row_id
+            self.prev_numeric_values[reg["address"]] = None
+
+        self.address_to_rowid_input = {}
+        self.tree_input.delete(*self.tree_input.get_children())
+        self.tooltip_input.row_tooltip_data.clear()
+        for reg in self.input_registers:
+            row_id = self.tree_input.insert("", "end", values=(f"0x{reg['address']:04X}", reg["description"], ""))
+            self.address_to_rowid_input[reg["address"]] = row_id
+            self.prev_numeric_values_input[reg["address"]] = None
+
+        self.address_to_rowid_test = {}
+        self.tree_test.delete(*self.tree_test.get_children())
+        self.tooltip_test.row_tooltip_data.clear()
+        for reg in self.selftest_registers:
+            row_id = self.tree_test.insert("", "end", values=(f"0x{reg['address']:04X}", reg["description"], ""))
+            self.address_to_rowid_test[reg["address"]] = row_id
+            self.prev_numeric_values_test[reg["address"]] = None
+
+        self.address_to_rowid_parallel = {}
+        self.tree_parallel.delete(*self.tree_parallel.get_children())
+        self.tooltip_parallel.row_tooltip_data.clear()
+        for reg in self.parallel_registers:
+            row_id = self.tree_parallel.insert("", "end", values=(f"0x{reg['address']:04X}", reg["description"], ""))
+            self.address_to_rowid_parallel[reg["address"]] = row_id
+            self.prev_numeric_values_parallel[reg["address"]] = None
+
+        # Initial fetch of all register sets.
+        self.fetch_all_data()
+
+        if self.update_interval > 0:
+            self.master.after(self.update_interval * 1000, self.periodic_fetch_all)
+
+    def fetch_all_data(self):
+        self.fetch_holding_data()
+        self.fetch_data_input()
+        self.fetch_data_selftest()
+        self.fetch_data_parallel()
+
+    def periodic_fetch_all(self):
+        self.fetch_all_data()
+        self.master.after(self.update_interval * 1000, self.periodic_fetch_all)
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Solax X1/X3 Hybrid Inverter Modbus GUI.")

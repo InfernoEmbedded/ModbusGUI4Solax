@@ -1,4 +1,6 @@
-class HoldingRegisterDefinitions:
+from register_utils import RegisterDefinitionsBase
+
+class HoldingRegisterDefinitions(RegisterDefinitionsBase):
     """
     Encapsulates all known holding registers (0x0000 ~ 0x0115).
     Each register entry is a dict with fields:
@@ -227,69 +229,11 @@ class HoldingRegisterDefinitions:
         """Return the list of register definitions."""
         return self._registers
 
-    def renderRegister(self, reg, raw_list):
-        """
-        Given a register definition 'reg' and the raw register data 'raw_list'
-        from Modbus, return a string for display.
-
-        Cases:
-          - If length>1 => interpret multi-register ASCII.
-          - If address==0x001D => safety type from self._safety_map.
-          - Otherwise => numeric, possibly with scale/unit.
-        """
-        length = reg["length"]
-        address = reg["address"]
-
-        # Multi-register => ASCII
-        if length > 1:
-            chars = []
-            for val in raw_list:
-                high_byte = (val >> 8) & 0xFF
-                low_byte = val & 0xFF
-                chars.append(chr(high_byte))
-                chars.append(chr(low_byte))
-            return "".join(chars).strip()
-
-        # Single register
-        raw_val = raw_list[0]
-
-        # Safety type
-        if address == 0x001D:
+    def render_register(self, reg, raw_list):
+        # Special handling for Safety Type at address 0x001D.
+        if reg["length"] == 1 and reg["address"] == 0x001D:
+            raw_val = raw_list[0]
             mapped = self._safety_map.get(raw_val, "Unknown")
             return f"{raw_val} => {mapped}"
-
-        # Otherwise => numeric
-        scale = reg.get("scale", 1.0)
-        unit = reg.get("unit", "")
-        signed = reg.get("signed", False)
-
-        # Convert raw => float
-        fromSigned = self._convert_raw_to_float(raw_val, scale, signed)
-        return self._format_display_str(fromSigned, scale, unit)
-
-    def _convert_raw_to_float(self, raw_val, scale, signed):
-        """
-        Helper to handle sign and scaling.
-        """
-        if signed:
-            if raw_val & 0x8000:
-                raw_val = raw_val - 0x10000
-        return raw_val * scale
-
-    def _format_display_str(self, value, scale, unit):
-        """
-        If scale == 1.0 => integer display,
-        else => 3 decimals.
-        """
-        if scale == 1.0:
-            val_str = f"{int(value)}"
-        elif scale == 0.1:
-            val_str = f"{value:.1f}"
-        elif scale == 0.01:
-            val_str = f"{value:.2f}"
-        else:
-            val_str = f"{value:.3f}"
-
-        if unit:
-            return f"{val_str} {unit}"
-        return val_str
+        # For all other registers, call the parent method.
+        return super().render_register(reg, raw_list)
