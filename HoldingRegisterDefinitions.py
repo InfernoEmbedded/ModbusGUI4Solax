@@ -265,8 +265,7 @@ class HoldingRegisterDefinitions:
 
         # Convert raw => float
         fromSigned = self._convert_raw_to_float(raw_val, scale, signed)
-        # Format
-        return self._format_display_str(fromSigned, unit)
+        return self._format_display_str(fromSigned, scale, unit)
 
     def _convert_raw_to_float(self, raw_val, scale, signed):
         """
@@ -277,10 +276,20 @@ class HoldingRegisterDefinitions:
                 raw_val = raw_val - 0x10000
         return raw_val * scale
 
-    def _format_display_str(self, value, unit):
+    def _format_display_str(self, value, scale, unit):
         """
-        Format numeric with up to 3 decimals, optionally appending unit.
+        If scale == 1.0 => integer display,
+        else => 3 decimals.
         """
+        if scale == 1.0:
+            val_str = f"{int(value)}"
+        elif scale == 0.1:
+            val_str = f"{value:.1f}"
+        elif scale == 0.01:
+            val_str = f"{value:.2f}"
+        else:
+            val_str = f"{value:.3f}"
+
         if unit:
-            return f"{value:.3f} {unit}"
-        return f"{value:.3f}"
+            return f"{val_str} {unit}"
+        return val_str
