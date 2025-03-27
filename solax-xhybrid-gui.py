@@ -6,9 +6,8 @@ from tkinter import ttk, messagebox
 from pymodbus.client import ModbusTcpClient
 from pymodbus.exceptions import ModbusException
 
-# Import the separate holding register definitions
+# Import your separate holding register definitions
 from HoldingRegisterDefinitions import HoldingRegisterDefinitions
-
 
 ###############################################################################
 # Safety type mappings for register 0x001D (numeric => textual).
@@ -50,7 +49,7 @@ SAFETY_TYPE_MAP = {
 }
 
 ###############################################################################
-# Helper functions
+# Helper Functions
 ###############################################################################
 def to_signed_16(val: int) -> int:
     """Interpret 0..65535 as -32768..32767 if sign bit is set."""
@@ -58,31 +57,33 @@ def to_signed_16(val: int) -> int:
         return val - 0x10000
     return val
 
-def format_scaled_value(raw_val: int, scale: float, unit: str, signed: bool) -> str:
-    """Scale and format a single numeric register value, e.g. '230.0 V' or '-10.0 A'."""
+def format_scaled_value(raw_val: int, scale: float, signed: bool) -> float:
+    """
+    Convert raw (uint16) to a signed/unsigned int, apply scale, and return float.
+    """
     val_int = to_signed_16(raw_val) if signed else raw_val
-    scaled = val_int * scale
-    return f"{scaled:.3f} {unit}".strip() if unit else f"{scaled:.3f}"
+    return val_int * scale
 
+def format_display_str(value: float, unit: str) -> str:
+    """Return a string, e.g. 230.0 => '230.000 V'."""
+    if unit:
+        return f"{value:.3f} {unit}"
+    return f"{value:.3f}"
 
 ###############################################################################
-# A lightweight RowTooltip class to show raw+hex data in a tooltip on hover
+# RowTooltip: displays raw & hex data on hover
 ###############################################################################
 class RowTooltip:
     def __init__(self, widget):
         self.widget = widget
         self.tip_window = None
         self.last_row_id = None
+        self.row_tooltip_data = {}  # row_id => (raw_text, hex_text)
 
-        # Dict mapping row_id => (raw_text, hex_text)
-        self.row_tooltip_data = {}
-
-        # Bind events
         self.widget.bind("<Motion>", self._on_mouse_move)
         self.widget.bind("<Leave>", self._on_mouse_leave)
 
     def set_row_data(self, row_id, raw_text, hex_text):
-        """Store raw & hex data for a given Treeview row ID."""
         self.row_tooltip_data[row_id] = (raw_text, hex_text)
 
     def _on_mouse_move(self, event):
@@ -94,10 +95,9 @@ class RowTooltip:
         if row_id != self.last_row_id:
             self.last_row_id = row_id
             self._hide_tip()
-
             if row_id in self.row_tooltip_data:
-                raw_val, hex_val = self.row_tooltip_data[row_id]
-                tip_text = f"Raw: {raw_val}\nHex: {hex_val}"
+                raw_str, hex_str = self.row_tooltip_data[row_id]
+                tip_text = f"Raw: {raw_str}\nHex: {hex_str}"
                 self._show_tip(tip_text, event.x_root + 20, event.y_root + 10)
 
     def _on_mouse_leave(self, event):
@@ -107,11 +107,11 @@ class RowTooltip:
         self.tip_window = tw = tk.Toplevel(self.widget)
         tw.overrideredirect(True)
         tw.attributes("-topmost", True)
-        label = tk.Label(
-            tw, text=text, justify="left", background="#ffffe0",
-            relief="solid", borderwidth=1, font=("tahoma", 8)
-        )
+
+        label = tk.Label(tw, text=text, justify="left", background="#ffffe0",
+                         relief="solid", borderwidth=1, font=("tahoma", 8))
         label.pack(ipadx=1)
+
         tw.geometry(f"+{x}+{y}")
 
     def _hide_tip(self):
@@ -119,14 +119,15 @@ class RowTooltip:
             self.tip_window.destroy()
         self.tip_window = None
 
-
 ###############################################################################
-# Main GUI class
+# Main GUI Class
 ###############################################################################
 class ModbusGUI:
-    def __init__(self, master, default_ip="192.168.0.100"):
+    def __init__(self, master, default_ip="192.168.0.100", update_interval=10):
         self.master = master
-        self.master.title("Inverter Modbus TCP Reader - Scroll + Tooltip")
+        self.master.title("Inverter Modbus Reader")
+
+        self.update_interval = update_interval  # seconds
 
         ######################
         # 1) Connection Frame
@@ -134,18 +135,26 @@ class ModbusGUI:
         connection_frame = ttk.LabelFrame(master, text="Connection Settings")
         connection_frame.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
 
+        # Row 0: IP / Port
         ttk.Label(connection_frame, text="IP Address:").grid(row=0, column=0, padx=5, pady=5, sticky="e")
-        self.ip_entry = ttk.Entry(connection_frame, width=20)
+        self.ip_entry = ttk.Entry(connection_frame, width=15)
         self.ip_entry.insert(0, default_ip)
         self.ip_entry.grid(row=0, column=1, padx=5, pady=5)
 
         ttk.Label(connection_frame, text="Port:").grid(row=0, column=2, padx=5, pady=5, sticky="e")
-        self.port_entry = ttk.Entry(connection_frame, width=10)
+        self.port_entry = ttk.Entry(connection_frame, width=6)
         self.port_entry.insert(0, "502")
         self.port_entry.grid(row=0, column=3, padx=5, pady=5)
 
-        ttk.Button(connection_frame, text="Connect & Read", command=self.connect_and_read)\
-            .grid(row=0, column=4, padx=5, pady=5)
+        # Row 1: Interval
+        ttk.Label(connection_frame, text="Update Interval (s):").grid(row=1, column=0, padx=5, pady=5, sticky="e")
+        self.interval_entry = ttk.Entry(connection_frame, width=6)
+        self.interval_entry.insert(0, str(update_interval))
+        self.interval_entry.grid(row=1, column=1, padx=5, pady=5)
+
+        # Connect button
+        ttk.Button(connection_frame, text="Connect", command=self.on_connect)\
+            .grid(row=1, column=3, padx=5, pady=5, sticky="e")
 
         ######################
         # 2) Table + scrollbar
@@ -163,7 +172,6 @@ class ModbusGUI:
         self.tree.column("description", width=320, anchor="w")
         self.tree.column("value", width=220, anchor="w")
 
-        # Vertical scrollbar
         vsb = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vsb.set)
         self.tree.grid(row=0, column=0, sticky="nsew")
@@ -172,11 +180,11 @@ class ModbusGUI:
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(0, weight=1)
 
-        # RowTooltip for raw+hex data on hover
+        # Tooltips
         self.tooltip = RowTooltip(self.tree)
 
         ######################
-        # 3) Window resizing
+        # 3) Resizing
         ######################
         master.columnconfigure(0, weight=1)
         master.rowconfigure(1, weight=1)
@@ -187,7 +195,47 @@ class ModbusGUI:
         self.register_defs = HoldingRegisterDefinitions()
         self.registers = self.register_defs.get_registers()
 
-    def connect_and_read(self):
+        # For numeric compares
+        self.prev_numeric_values = {}  # address -> last float or None
+
+    def on_connect(self):
+        """User clicked 'Connect'."""
+        # 1. Parse new interval from GUI
+        try:
+            new_interval = int(self.interval_entry.get())
+        except ValueError:
+            messagebox.showerror("Invalid Interval", "Please enter a valid integer for the update interval.")
+            return
+
+        self.update_interval = new_interval
+
+        # 2. Clear table & tooltip data
+        self.tree.delete(*self.tree.get_children())
+        self.tooltip.row_tooltip_data.clear()
+
+        # Insert empty rows for each register
+        self.address_to_rowid = {}
+        for reg in self.registers:
+            address_hex = f"0x{reg['address']:04X}"
+            desc = reg["description"]
+            row_id = self.tree.insert("", "end", values=(address_hex, desc, ""))
+            self.address_to_rowid[reg["address"]] = row_id
+            self.prev_numeric_values[reg["address"]] = None
+
+        # 3. Do initial read
+        self.fetch_data()
+
+        # 4. If interval>0, schedule periodic
+        if self.update_interval > 0:
+            self.master.after(self.update_interval * 1000, self.periodic_fetch)
+
+    def periodic_fetch(self):
+        """Called periodically if update_interval>0."""
+        self.fetch_data()
+        self.master.after(self.update_interval * 1000, self.periodic_fetch)
+
+    def fetch_data(self):
+        """Reads all registers, updates the table, set color if up/down/same."""
         ip = self.ip_entry.get()
         port = int(self.port_entry.get())
 
@@ -196,20 +244,18 @@ class ModbusGUI:
             messagebox.showerror("Connection Error", f"Failed to connect to {ip}:{port}")
             return
 
-        self.tree.delete(*self.tree.get_children())
-        self.tooltip.row_tooltip_data.clear()
-
         try:
             for reg in self.registers:
+                row_id = self.address_to_rowid[reg["address"]]
                 resp = client.read_holding_registers(address=reg["address"], count=reg["length"])
                 if resp.isError():
-                    raw_str  = "Error"
-                    hex_str  = "Error"
+                    # Error
+                    raw_str, hex_str = ("Error", "Error")
                     display_str = "Error reading"
+                    color_tag = "white_bg"
                 else:
                     raw_list = resp.registers
-
-                    # Build raw decimal string
+                    # build raw/hex
                     if len(raw_list) == 1:
                         raw_str = str(raw_list[0])
                         hex_str = f"0x{raw_list[0]:04X}"
@@ -217,9 +263,38 @@ class ModbusGUI:
                         raw_str = "[" + ", ".join(str(x) for x in raw_list) + "]"
                         hex_str = "[" + ", ".join(f"0x{x:04X}" for x in raw_list) + "]"
 
-                    # Build the decorated or scaled display
-                    if reg["length"] > 1:
-                        # multi-register => interpret as ASCII text
+                    if reg["length"] == 1 and reg["address"] != 0x001D:
+                        # Single numeric
+                        raw_val = raw_list[0]
+                        scale = reg.get("scale", 1.0)
+                        unit  = reg.get("unit", "")
+                        signed= reg.get("signed", False)
+
+                        float_val = format_scaled_value(raw_val, scale, signed)
+                        display_str = format_display_str(float_val, unit)
+
+                        old_val = self.prev_numeric_values[reg["address"]]
+                        if old_val is None:
+                            color_tag = "white_bg"
+                        else:
+                            if float_val > old_val:
+                                color_tag = "bg_green"
+                            elif float_val < old_val:
+                                color_tag = "bg_red"
+                            else:
+                                color_tag = "white_bg"
+                        self.prev_numeric_values[reg["address"]] = float_val
+
+                    elif reg["address"] == 0x001D:
+                        # Safety Type
+                        raw_val = raw_list[0]
+                        mapped = SAFETY_TYPE_MAP.get(raw_val, "Unknown")
+                        display_str = f"{raw_val} => {mapped}"
+                        color_tag = "white_bg"
+                        self.prev_numeric_values[reg["address"]] = None
+
+                    else:
+                        # Multi-reg => ASCII
                         chars = []
                         for val in raw_list:
                             high_byte = (val >> 8) & 0xFF
@@ -227,27 +302,18 @@ class ModbusGUI:
                             chars.append(chr(high_byte))
                             chars.append(chr(low_byte))
                         display_str = "".join(chars).strip()
-                    else:
-                        # single register => numeric or special
-                        raw_val = raw_list[0]
-                        if reg["address"] == 0x001D:
-                            mapped = SAFETY_TYPE_MAP.get(raw_val, "Unknown")
-                            display_str = f"{raw_val} => {mapped}"
-                        else:
-                            scale = reg.get("scale", 1.0)
-                            unit  = reg.get("unit", "")
-                            signed= reg.get("signed", False)
-                            if "scale" in reg or "unit" in reg:
-                                display_str = format_scaled_value(raw_val, scale, unit, signed)
-                            else:
-                                display_str = str(raw_val)
 
-                # Insert row
-                addr_hex = f"0x{reg['address']:04X}"
+                        color_tag = "white_bg"
+                        self.prev_numeric_values[reg["address"]] = None
+
+                # Update row
+                address_hex = f"0x{reg['address']:04X}"
                 desc = reg["description"]
-                row_id = self.tree.insert("", "end", values=(addr_hex, desc, display_str))
+                self.tree.item(row_id, values=(address_hex, desc, display_str))
 
-                # Attach raw & hex to tooltip data
+                # Color row
+                self._set_row_bg(row_id, color_tag)
+                # Tooltip
                 self.tooltip.set_row_data(row_id, raw_str, hex_str)
 
         except ModbusException as e:
@@ -257,16 +323,27 @@ class ModbusGUI:
         finally:
             client.close()
 
+    def _set_row_bg(self, row_id, color_tag):
+        # define tags
+        self.tree.tag_configure('bg_green', background='LightGreen')
+        self.tree.tag_configure('bg_red', background='LightSalmon')
+        self.tree.tag_configure('white_bg', background='white')
+
+        if not color_tag:
+            color_tag = 'white_bg'
+        self.tree.item(row_id, tags=(color_tag,))
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Modbus GUI with tooltip for raw+hex data, plus vertical scrollbar.")
+    parser = argparse.ArgumentParser(description="Modbus GUI with color-coded changes & Interval in GUI.")
     parser.add_argument("--host", default="192.168.0.100", help="Inverter IP address")
+    parser.add_argument("--interval", type=int, default=10,
+                        help="Default update interval in seconds (GUI can override).")
     return parser.parse_args()
 
 def main():
     args = parse_args()
     root = tk.Tk()
-    app = ModbusGUI(root, default_ip=args.host)
+    app = ModbusGUI(root, default_ip=args.host, update_interval=args.interval)
     root.mainloop()
 
 if __name__ == "__main__":
