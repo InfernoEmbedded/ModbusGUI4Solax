@@ -6,8 +6,8 @@ from tkinter import ttk, messagebox
 from pymodbus.client import ModbusTcpClient
 from pymodbus.exceptions import ModbusException
 
-# Import definitions from the file above
 from HoldingRegisterDefinitions import HoldingRegisterDefinitions
+from InputRegisterDefinitions import InputRegisterDefinitions
 
 # RowTooltip for showing raw & hex data on hover
 class RowTooltip:
@@ -90,7 +90,11 @@ class ModbusGUI:
         self.holding_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.holding_tab, text="Holding Registers")
 
-        # Table frame inside the holding_tab
+        # Input Registers tab (NEW)
+        self.input_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.input_tab, text="Input Registers")
+
+        # Table for holding
         table_frame = ttk.Frame(self.holding_tab)
         table_frame.pack(fill="both", expand=True)
 
@@ -119,14 +123,44 @@ class ModbusGUI:
 
         self.tooltip = RowTooltip(self.tree)
 
+        # Table for input registers (NEW)
+        table_frame_in = ttk.Frame(self.input_tab)
+        table_frame_in.pack(fill="both", expand=True)
+
+        self.tree_input = ttk.Treeview(table_frame_in,
+                                       columns=("address", "desc", "value"),
+                                       show='headings')
+        self.tree_input.heading("address", text="Register Address")
+        self.tree_input.heading("desc", text="Description")
+        self.tree_input.heading("value", text="Value")
+
+        self.tree_input.column("address", width=120, anchor="e", stretch=False)
+        self.tree_input.column("desc", width=300, anchor="w", stretch=True)
+        self.tree_input.column("value", width=120, anchor="w", stretch=False)
+        self.tree_input.grid(row=0, column=0, sticky="nsew")
+
+        vsb_in = ttk.Scrollbar(table_frame_in, orient="vertical", command=self.tree_input.yview)
+        self.tree_input.configure(yscrollcommand=vsb_in.set)
+        vsb_in.grid(row=0, column=1, sticky="ns")
+
+        table_frame_in.columnconfigure(0, weight=1)
+        table_frame_in.rowconfigure(0, weight=1)
+
+        self.tooltip_input = RowTooltip(self.tree_input)
+
         # Root window resizing
         master.columnconfigure(0, weight=1)
         master.rowconfigure(1, weight=1)
 
         # Register definitions
         self.reg_defs = HoldingRegisterDefinitions()
-        self.registers = self.reg_defs.get_registers()
+        self.holding_registers = self.reg_defs.get_registers()
+
+        self.input_defs = InputRegisterDefinitions()
+        self.input_registers = self.input_defs.get_registers()
+
         self.prev_numeric_values = {}
+        self.prev_numeric_values_input = {}  # for input regs
 
     def on_connect(self):
         try:
@@ -137,27 +171,43 @@ class ModbusGUI:
 
         self.update_interval = new_int
 
-        # Clear table
+        # Clear table (holding)
         self.tree.delete(*self.tree.get_children())
         self.tooltip.row_tooltip_data.clear()
 
         self.address_to_rowid = {}
-        for r in self.registers:
+        for r in self.holding_registers:
             row_id = self.tree.insert("", "end", values=(f"0x{r['address']:04X}", r["description"], ""))
             self.address_to_rowid[r["address"]] = row_id
-            # For numeric registers, track previous value
             if r["length"] == 1 and r["address"] != 0x001D:
                 self.prev_numeric_values[r["address"]] = None
             else:
                 self.prev_numeric_values[r["address"]] = None
 
+        # Clear table (input)
+        self.tree_input.delete(*self.tree_input.get_children())
+        self.tooltip_input.row_tooltip_data.clear()
+
+        self.address_to_rowid_input = {}
+        for r in self.input_registers:
+            row_id = self.tree_input.insert("", "end", values=(f"0x{r['address']:04X}", r["description"], ""))
+            self.address_to_rowid_input[r["address"]] = row_id
+            self.prev_numeric_values_input[r["address"]] = None
+
         self.fetch_data()
+        self.fetch_data_input()
+
         if self.update_interval > 0:
             self.master.after(self.update_interval * 1000, self.periodic_fetch)
+            self.master.after(self.update_interval * 1000, self.periodic_fetch_input)
 
     def periodic_fetch(self):
         self.fetch_data()
         self.master.after(self.update_interval * 1000, self.periodic_fetch)
+
+    def periodic_fetch_input(self):
+        self.fetch_data_input()
+        self.master.after(self.update_interval * 1000, self.periodic_fetch_input)
 
     def fetch_data(self):
         ip = self.ip_entry.get()
@@ -169,7 +219,7 @@ class ModbusGUI:
             return
 
         try:
-            for reg in self.registers:
+            for reg in self.holding_registers:
                 row_id = self.address_to_rowid[reg["address"]]
                 resp = client.read_holding_registers(
                     address=reg["address"],
@@ -212,12 +262,71 @@ class ModbusGUI:
                         color_tag = "white_bg"
                         self.prev_numeric_values[reg["address"]] = None
 
-                # Update row
-                addr_hex = f"0x{reg['address']:04X}"
-                desc = reg["description"]
-                self.tree.item(row_id, values=(addr_hex, desc, disp_str))
-                self._set_row_bg(row_id, color_tag)
+                self.tree.item(row_id, values=(f"0x{reg['address']:04X}", reg["description"], disp_str))
+                self._set_row_bg(self.tree, row_id, color_tag)
                 self.tooltip.set_row_data(row_id, raw_str, hex_str)
+
+        except ModbusException as e:
+            messagebox.showerror("Modbus Error", str(e))
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+        finally:
+            client.close()
+
+    def fetch_data_input(self):
+        ip = self.ip_entry.get()
+        port = int(self.port_entry.get())
+
+        client = ModbusTcpClient(host=ip, port=port)
+        if not client.connect():
+            messagebox.showerror("Connection Error", f"Could not connect to {ip}:{port} (input regs)")
+            return
+
+        try:
+            for reg in self.input_registers:
+                row_id = self.address_to_rowid_input[reg["address"]]
+                # For input registers, we use read_input_registers
+                resp = client.read_input_registers(
+                    address=reg["address"], count=reg["length"]
+                )
+                if resp.isError():
+                    raw_str = "Error"
+                    hex_str = "Error"
+                    disp_str = "Error reading"
+                    color_tag = "white_bg"
+                else:
+                    raw_list = resp.registers
+                    if len(raw_list) == 1:
+                        raw_str = str(raw_list[0])
+                        hex_str = f"0x{raw_list[0]:04X}"
+                    else:
+                        raw_str = "[" + ", ".join(str(v) for v in raw_list) + "]"
+                        hex_str = "[" + ", ".join(f"0x{v:04X}" for v in raw_list) + "]"
+
+                    # Use the input registers definition's render method
+                    disp_str = self.input_defs.renderRegister(reg, raw_list)
+
+                    # Color-coded approach if single numeric (same idea)
+                    if reg["length"] == 1:
+                        numeric_val = self._try_parse_numeric(disp_str)
+                        old_val = self.prev_numeric_values_input[reg["address"]]
+                        if old_val is None or numeric_val is None:
+                            color_tag = "white_bg"
+                        else:
+                            if numeric_val > old_val:
+                                color_tag = "bg_green"
+                            elif numeric_val < old_val:
+                                color_tag = "bg_red"
+                            else:
+                                color_tag = "white_bg"
+                        self.prev_numeric_values_input[reg["address"]] = numeric_val
+                    else:
+                        color_tag = "white_bg"
+                        self.prev_numeric_values_input[reg["address"]] = None
+
+                self.tree_input.item(row_id, values=(f"0x{reg['address']:04X}", reg["description"], disp_str))
+                self._set_row_bg(self.tree_input, row_id, color_tag)
+                self.tooltip_input.set_row_data(row_id, raw_str, hex_str)
 
         except ModbusException as e:
             messagebox.showerror("Modbus Error", str(e))
@@ -238,18 +347,19 @@ class ModbusGUI:
         except:
             return None
 
-    def _set_row_bg(self, row_id, color_tag):
-        self.tree.tag_configure('bg_green', background='LightGreen')
-        self.tree.tag_configure('bg_red', background='LightSalmon')
-        self.tree.tag_configure('white_bg', background='white')
+    def _set_row_bg(self, tree_widget, row_id, color_tag):
+        # define styles
+        tree_widget.tag_configure('bg_green', background='LightGreen')
+        tree_widget.tag_configure('bg_red', background='LightSalmon')
+        tree_widget.tag_configure('white_bg', background='white')
 
         if not color_tag:
             color_tag = 'white_bg'
-        self.tree.item(row_id, tags=(color_tag,))
+        tree_widget.item(row_id, tags=(color_tag,))
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Modbus GUI with tab + minimal changes for column widths.")
+    parser = argparse.ArgumentParser(description="Solax X1/X3 Hybrid Inverter Modbus GUI.")
     parser.add_argument("--host", default="192.168.0.100", help="Inverter IP")
     parser.add_argument("--interval", type=int, default=10, help="Update interval in seconds")
     return parser.parse_args()
