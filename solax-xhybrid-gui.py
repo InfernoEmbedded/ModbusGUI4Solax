@@ -56,7 +56,7 @@ class RowTooltip:
 class ModbusGUI:
     def __init__(self, master, default_ip="192.168.0.100", update_interval=10):
         self.master = master
-        self.master.title("Inverter Modbus Reader (renderRegister)")
+        self.master.title("Solax X1/X3 Hybrid Inverter Modbus GUI")
 
         self.update_interval = update_interval
 
