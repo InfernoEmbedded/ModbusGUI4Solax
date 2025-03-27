@@ -9,6 +9,7 @@ from pymodbus.exceptions import ModbusException
 from HoldingRegisterDefinitions import HoldingRegisterDefinitions
 from InputRegisterDefinitions import InputRegisterDefinitions
 from SelfTestInputRegisterDefinitions import SelfTestInputRegisterDefinitions
+from ParallelInputRegisterDefinitions import ParallelInputRegisterDefinitions
 
 # RowTooltip for showing raw & hex data on hover
 class RowTooltip:
@@ -60,6 +61,7 @@ class ModbusGUI:
         self.master.title("Solax X1/X3 Hybrid Inverter Modbus GUI")
 
         self.update_interval = update_interval
+        self.invalid_parallel_registers = set()
 
         # Connection frame
         connection_frame = ttk.LabelFrame(master, text="Connection Settings")
@@ -91,6 +93,7 @@ class ModbusGUI:
         self._create_holding_tab()
         self._create_input_tab()
         self._create_selftest_tab()
+        self._create_parallel_tab()
 
         # Window resizing
         master.columnconfigure(0, weight=1)
@@ -106,9 +109,13 @@ class ModbusGUI:
         self.selftest_defs = SelfTestInputRegisterDefinitions()
         self.selftest_registers = self.selftest_defs.get_registers()
 
+        self.parallel_defs = ParallelInputRegisterDefinitions()
+        self.parallel_registers = self.parallel_defs.get_registers()
+
         self.prev_numeric_values = {}
         self.prev_numeric_values_input = {}
         self.prev_numeric_values_test = {}
+        self.prev_numeric_values_parallel = {}
 
     # ------------------------------------------------------------------------
     # Tab creation functions
@@ -206,6 +213,38 @@ class ModbusGUI:
 
         self.tooltip_test = RowTooltip(self.tree_test)
 
+    def _create_parallel_tab(self):
+        """Create the new 'Parallel Registers' tab & table."""
+        self.parallel_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.parallel_tab, text="Parallel Registers")
+
+        table_frame_par = ttk.Frame(self.parallel_tab)
+        table_frame_par.pack(fill="both", expand=True)
+
+        self.tree_parallel = ttk.Treeview(
+            table_frame_par,
+            columns=("address", "desc", "value"),
+            show='headings'
+        )
+        self.tree_parallel.heading("address", text="Register Address")
+        self.tree_parallel.heading("desc", text="Description")
+        self.tree_parallel.heading("value", text="Value")
+
+        self.tree_parallel.column("address", width=120, anchor="e", stretch=False)
+        self.tree_parallel.column("desc", width=300, anchor="w", stretch=True)
+        self.tree_parallel.column("value", width=150, anchor="w", stretch=False)
+
+        self.tree_parallel.grid(row=0, column=0, sticky="nsew")
+
+        vsb_par = ttk.Scrollbar(table_frame_par, orient="vertical", command=self.tree_parallel.yview)
+        self.tree_parallel.configure(yscrollcommand=vsb_par.set)
+        vsb_par.grid(row=0, column=1, sticky="ns")
+
+        table_frame_par.columnconfigure(0, weight=1)
+        table_frame_par.rowconfigure(0, weight=1)
+
+        self.tooltip_parallel = RowTooltip(self.tree_parallel)
+
     # ------------------------------------------------------------------------
     # Connection & fetching logic
     # ------------------------------------------------------------------------
@@ -218,7 +257,7 @@ class ModbusGUI:
 
         self.update_interval = new_int
 
-        # 1. Clear Holding table
+        # Clear Holding table
         self.tree.delete(*self.tree.get_children())
         self.tooltip.row_tooltip_data.clear()
         self.address_to_rowid = {}
@@ -230,7 +269,7 @@ class ModbusGUI:
             else:
                 self.prev_numeric_values[r["address"]] = None
 
-        # 2. Clear Input table
+        # Clear Input table
         self.tree_input.delete(*self.tree_input.get_children())
         self.tooltip_input.row_tooltip_data.clear()
         self.address_to_rowid_input = {}
@@ -239,7 +278,7 @@ class ModbusGUI:
             self.address_to_rowid_input[r["address"]] = row_id
             self.prev_numeric_values_input[r["address"]] = None
 
-        # 3. Clear SelfTest table
+        # Clear SelfTest table
         self.tree_test.delete(*self.tree_test.get_children())
         self.tooltip_test.row_tooltip_data.clear()
         self.address_to_rowid_test = {}
@@ -248,16 +287,27 @@ class ModbusGUI:
             self.address_to_rowid_test[r["address"]] = row_id
             self.prev_numeric_values_test[r["address"]] = None
 
-        # 4. fetch each set once
+        # Clear Parallel
+        self.tree_parallel.delete(*self.tree_parallel.get_children())
+        self.tooltip_parallel.row_tooltip_data.clear()
+        self.address_to_rowid_parallel = {}
+        for r in self.parallel_registers:
+            row_id = self.tree_parallel.insert("", "end", values=(f"0x{r['address']:04X}", r["description"], ""))
+            self.address_to_rowid_parallel[r["address"]] = row_id
+            self.prev_numeric_values_parallel[r["address"]] = None
+
+        # fetch each set once
         self.fetch_data()
         self.fetch_data_input()
         self.fetch_data_selftest()
+        self.fetch_data_parallel()
 
         # 5. schedule repeats if interval>0
         if self.update_interval > 0:
             self.master.after(self.update_interval * 1000, self.periodic_fetch)
             self.master.after(self.update_interval * 1000, self.periodic_fetch_input)
             self.master.after(self.update_interval * 1000, self.periodic_fetch_selftest)
+            self.master.after(self.update_interval * 1000, self.periodic_fetch_parallel)
 
     def periodic_fetch(self):
         self.fetch_data()
@@ -270,6 +320,10 @@ class ModbusGUI:
     def periodic_fetch_selftest(self):
         self.fetch_data_selftest()
         self.master.after(self.update_interval * 1000, self.periodic_fetch_selftest)
+
+    def periodic_fetch_parallel(self):
+        self.fetch_data_parallel()
+        self.master.after(self.update_interval * 1000, self.periodic_fetch_parallel)
 
     def fetch_data(self):
         ip = self.ip_entry.get()
@@ -445,6 +499,83 @@ class ModbusGUI:
             messagebox.showerror("Modbus Error", str(e))
         except Exception as e:
             messagebox.showerror("Error", str(e))
+        finally:
+            client.close()
+
+    def fetch_data_parallel(self):
+        """Fetch parallel input registers, skipping any that are marked invalid."""
+        ip = self.ip_entry.get()
+        port = int(self.port_entry.get())
+        client = ModbusTcpClient(host=ip, port=port)
+
+        # Attempt connection, but avoid printing errors for "Exception response 132 / 0"
+        if not client.connect():
+            messagebox.showerror("Connection Error", f"Could not connect to {ip}:{port} (parallel regs)")
+            return
+
+        try:
+            for reg in self.parallel_registers:
+                address = reg["address"]
+
+                # SKIP if previously marked invalid
+                if address in self.invalid_parallel_registers:
+                    row_id = self.address_to_rowid_parallel[address]
+                    self.tree_parallel.item(row_id, values=(
+                        f"0x{address:04X}",
+                        reg["description"],
+                        "Invalid (skipped)"
+                    ))
+                    continue
+
+                # Attempt the read
+                resp = client.read_input_registers(address=address, count=reg["length"])
+                if resp.isError():
+                    self.invalid_parallel_registers.add(address)
+
+                    row_id = self.address_to_rowid_parallel[address]
+                    self.tree_parallel.item(row_id, values=(
+                        f"0x{address:04X}",
+                        reg["description"],
+                        "Invalid (unreadable)"
+                    ))
+                    continue
+
+                raw_list = resp.registers
+                if len(raw_list) == 1:
+                    raw_str = str(raw_list[0])
+                    hex_str = f"0x{raw_list[0]:04X}"
+                else:
+                    raw_str = "[" + ", ".join(str(v) for v in raw_list) + "]"
+                    hex_str = "[" + ", ".join(f"0x{v:04X}" for v in raw_list) + "]"
+
+                disp_str = self.parallel_defs.renderRegister(reg, raw_list)
+
+                # color-coded approach if single numeric
+                if reg["length"] == 1:
+                    numeric_val = self._try_parse_numeric(disp_str)
+                    old_val = self.prev_numeric_values_parallel[address]
+                    if old_val is None or numeric_val is None:
+                        color_tag = "white_bg"
+                    else:
+                        if numeric_val > old_val:
+                            color_tag = "bg_green"
+                        elif numeric_val < old_val:
+                            color_tag = "bg_red"
+                        else:
+                            color_tag = "white_bg"
+                    self.prev_numeric_values_parallel[address] = numeric_val
+                else:
+                    color_tag = "white_bg"
+                    self.prev_numeric_values_parallel[address] = None
+
+                # Update UI
+                row_id = self.address_to_rowid_parallel[address]
+                self.tree_parallel.item(row_id, values=(f"0x{address:04X}", reg["description"], disp_str))
+                self._set_row_bg(self.tree_parallel, row_id, color_tag)
+                self.tooltip_parallel.set_row_data(row_id, raw_str, hex_str)
+
+        except ModbusException:
+            pass
         finally:
             client.close()
 
