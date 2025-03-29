@@ -62,6 +62,7 @@ class ModbusGUI:
 
         self.update_interval = update_interval
         self.invalid_parallel_registers = set()
+        self.client = None  # Persistent connection
 
         # Connection frame
         connection_frame = ttk.LabelFrame(master, text="Connection Settings")
@@ -152,12 +153,16 @@ class ModbusGUI:
         return tree
 
     def get_modbus_client(self):
+        # Return the existing connection if available.
+        if self.client is not None:
+            return self.client
         ip = self.ip_entry.get()
         port = int(self.port_entry.get())
-        client = ModbusTcpClient(host=ip, port=port)
-        if not client.connect():
+        self.client = ModbusTcpClient(host=ip, port=port)
+        if not self.client.connect():
+            self.client = None
             raise ConnectionError(f"Could not connect to {ip}:{port}")
-        return client
+        return self.client
 
     def format_raw_list(self, raw_list):
         if len(raw_list) == 1:
@@ -214,7 +219,6 @@ class ModbusGUI:
                     self.tooltip_input.set_row_data(row_id, raw_str, hex_str)
                 elif tree == self.tree_test:
                     self.tooltip_test.set_row_data(row_id, raw_str, hex_str)
-            client.close()
         except Exception as e:
             messagebox.showerror("Error", str(e))
 
@@ -269,7 +273,6 @@ class ModbusGUI:
                 self.tree_parallel.item(row_id, values=(f"0x{address:04X}", reg["description"], disp_str))
                 self.set_row_bg(self.tree_parallel, row_id, color_tag)
                 self.tooltip_parallel.set_row_data(row_id, raw_str, hex_str)
-            client.close()
         except Exception:
             pass
 
@@ -314,11 +317,15 @@ class ModbusGUI:
             self.address_to_rowid_parallel[reg["address"]] = row_id
             self.prev_numeric_values_parallel[reg["address"]] = None
 
-        # Initial fetch of all register sets.
-        self.fetch_all_data()
+        try:
+            # Establish the persistent connection.
+            self.get_modbus_client()
+        except Exception as e:
+            messagebox.showerror("Connection Error", str(e))
+            return
 
-        if self.update_interval > 0:
-            self.master.after(self.update_interval * 1000, self.periodic_fetch_all)
+        # Initial fetch of all register sets.
+        self.periodic_fetch_all()
 
     def fetch_all_data(self):
         self.fetch_holding_data()
@@ -328,7 +335,8 @@ class ModbusGUI:
 
     def periodic_fetch_all(self):
         self.fetch_all_data()
-        self.master.after(self.update_interval * 1000, self.periodic_fetch_all)
+        if self.update_interval > 0:
+            self.master.after(self.update_interval * 1000, self.periodic_fetch_all)
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Solax X1/X3 Hybrid Inverter Modbus GUI.")
