@@ -56,7 +56,7 @@ class RowTooltip:
 
 
 class ModbusGUI:
-    def __init__(self, master, default_ip="192.168.0.100", update_interval=10):
+    def __init__(self, master, default_ip="192.168.0.100", default_port="502", update_interval=10):
         self.master = master
         self.master.title("Solax X1/X3 Hybrid Inverter Modbus GUI")
 
@@ -74,7 +74,7 @@ class ModbusGUI:
 
         ttk.Label(connection_frame, text="Port:").grid(row=0, column=2, padx=5, pady=5, sticky="e")
         self.port_entry = ttk.Entry(connection_frame, width=6)
-        self.port_entry.insert(0, "502")
+        self.port_entry.insert(0, default_port)
         self.port_entry.grid(row=0, column=3, padx=5, pady=5)
 
         ttk.Label(connection_frame, text="Interval(s):").grid(row=0, column=4, padx=5, pady=5, sticky="e")
@@ -332,14 +332,26 @@ class ModbusGUI:
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Solax X1/X3 Hybrid Inverter Modbus GUI.")
-    parser.add_argument("--host", default="192.168.0.100", help="Inverter IP")
+    parser.add_argument("--host", default="192.168.0.100", help="Inverter IP. Optionally specify as host:port")
     parser.add_argument("--interval", type=int, default=10, help="Update interval in seconds")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if ':' in args.host:
+        host, port_str = args.host.split(':', 1)
+        try:
+            port = int(port_str)
+        except ValueError:
+            parser.error("Port must be an integer when specified in host:port format")
+        args.host = host
+        args.port = port
+    else:
+        args.port = 502
+    return args
 
 def main():
     args = parse_args()
     root = tk.Tk()
-    app = ModbusGUI(root, default_ip=args.host, update_interval=args.interval)
+    # Pass both host and port as default values for the GUI.
+    app = ModbusGUI(root, default_ip=args.host, default_port=str(args.port), update_interval=args.interval)
     root.mainloop()
 
 if __name__ == "__main__":
